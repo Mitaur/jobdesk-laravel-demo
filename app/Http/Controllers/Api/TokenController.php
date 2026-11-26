@@ -27,7 +27,13 @@ class TokenController extends Controller
             ]);
         }
 
-        $token = $user->createToken($request->validated('device_name'), ['jobs:read', 'jobs:write']);
+        // Store the expiry on the token too, so the client sees when it ends (config: 7 days).
+        $minutes = config('sanctum.expiration');
+        $token = $user->createToken(
+            $request->validated('device_name'),
+            ['jobs:read', 'jobs:write'],
+            $minutes ? now()->addMinutes((int) $minutes) : null,
+        );
 
         return response()->json([
             'token' => $token->plainTextToken,

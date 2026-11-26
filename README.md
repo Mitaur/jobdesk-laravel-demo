@@ -8,13 +8,13 @@
 > **⚠️ Demo / portfolio project.** All customers, phones, emails and addresses are **fake sample data**
 > (555 numbers, `example.com` emails). This is **not client work** and not a real business.
 >
-> Live demo: _link added after deployment_ · Demo login: `demo@jobdesk.test` / `jobdesk-demo`
+> **Live demo: [jobdesk.mitaur.com](https://jobdesk.mitaur.com)** · Demo login: `demo@jobdesk.test` / `jobdesk-demo` · data resets every night
 
 A small Laravel 13 web app for a home-service business (plumber / HVAC): customers, quotes, scheduled jobs,
 a dashboard, a REST API with Sanctum tokens, a daily scheduled reminder command and daily log files.
 Built to show the everyday Laravel skills small business apps need – cleanly, with tests.
 
-![Landing page – desktop](docs/screenshots/desktop-landing.png)
+![Live landing page – jobdesk.mitaur.com](docs/screenshots/live-landing.png)
 
 ## Contents
 
@@ -207,16 +207,27 @@ and `LOG_LEVEL` (`debug` locally, `info` or `warning` in production) controls ho
 
 ## Deploying to shared hosting (e.g. Hostinger)
 
-Tested on a Hostinger **Business** plan: PHP 8.5, MariaDB 11.8, git, Composer 2 and Node 24 on the server,
-`proc_open` disabled, **no SSH needed**. The files in [`deploy/hostinger/`](deploy/hostinger) do the work:
+Running live on a Hostinger **Business** plan ([jobdesk.mitaur.com](https://jobdesk.mitaur.com)): PHP 8.5,
+MariaDB 11.8, git, Composer 2 and Node 24 on the server, `proc_open` disabled, **no SSH needed**.
+The files in [`deploy/hostinger/`](deploy/hostinger) do the work:
 
 | Script | What it does |
 |---|---|
 | `setup.sh <db_name> <db_user> '<temporary_db_password>'` | first deploy: composer `--no-dev`, CSS/JS build, `.env`, app key, migrate + demo data, caches, web root |
-| `configure-env.php` | writes the production `.env` and **replaces the temporary DB password with a new random one** that exists only in `.env` (chmod 600) |
-| `update.sh` | maintenance mode → `git pull` → composer → build → migrate → caches → back online |
+| `configure-env.php` | writes the production `.env` and **replaces the temporary DB password with a new random one** that exists only in `.env` (chmod 600) – on every account entry of the DB user (TCP and local socket) |
+| `configure-env.php --retire-temp` | for an existing deploy: any entry that still accepts the temporary password gets the `.env` password; `.env` is not changed |
+| `update.sh` | maintenance mode → `git pull` → composer → build → migrate → caches → back online (continues with the freshly pulled version of itself) |
 
-Neither script prints secrets or writes log files.
+None of them prints secrets or writes log files.
+
+Shared-hosting details the scripts already handle:
+
+- **Thread limit:** Vite 8 (Rolldown) stops with *"global thread pool has not been initialized"* on shared hosting,
+  so the build runs with `RAYON_NUM_THREADS=1`.
+- **File permissions:** the scripts use `umask 027` (code stays private); `public/` is made readable for the web
+  server after every build, otherwise CSS/JS return 403/404.
+- **No `proc_open`:** Composer unpacks with the PHP zip extension (warning only) and runs `--no-scripts`
+  (`package:discover` is called separately); the scheduler runs its tasks in-process.
 
 **Layout** – the code lives **outside** the web root; only `public/` is visible:
 
@@ -230,8 +241,10 @@ $HOME/domains/<your-domain>/public_html   → symlink to app/public
 1. hPanel: create the website for the domain, turn on SSL, create a MySQL database + user (temporary password).
 2. One-time cron job (hPanel → Advanced → Cron Jobs), then delete it after it ran:
    `git clone --depth 1 https://github.com/<you>/jobdesk-laravel-demo.git $HOME/domains/<your-domain>/app`
-3. One-time cron job, read its output, then delete it:
+3. One-time cron job, read its output, then delete it (the output is kept in `~/.logs/`, not in `public_html`,
+   and deleting the cron job deletes it):
    `bash $HOME/domains/<your-domain>/app/deploy/hostinger/setup.sh <db_name> <db_user> '<temporary_db_password>'`
+   Give the one-time jobs a fixed minute (e.g. `51 10 * * *`) instead of `* * * * *`, so they cannot start twice.
 4. Permanent cron job, every minute:
    `/opt/alt/php85/usr/bin/php $HOME/domains/<your-domain>/app/artisan schedule:run`
 5. Check: `https://<your-domain>/.env`, `/storage/logs/`, `/composer.json`, `/vendor/`, `/artisan` must return 403/404.

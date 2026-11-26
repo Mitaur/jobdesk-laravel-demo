@@ -4,6 +4,7 @@ use App\Enums\JobStatus;
 use App\Models\Customer;
 use App\Models\ServiceJob;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Laravel\Sanctum\Sanctum;
 
 beforeEach(function () {
@@ -20,6 +21,11 @@ test('a token is issued for correct credentials', function () {
 
     $response->assertCreated()->assertJsonStructure(['token', 'token_type', 'expires_at']);
     expect($this->user->tokens()->count())->toBe(1);
+
+    // the expiry is returned and stored on the token (7 days by default)
+    $expires = Carbon::parse($response->json('expires_at'));
+    expect($expires->between(now()->addDays(7)->subMinute(), now()->addDays(7)->addMinute()))->toBeTrue()
+        ->and($this->user->tokens()->first()->expires_at)->not->toBeNull();
 
     // the token really works
     $this->withToken($response->json('token'))->getJson('/api/jobs')->assertOk();
