@@ -76,6 +76,9 @@ step "7/9 caches (config, routes, views, events)"
 
 step "8/9 permissions"
 chmod -R u+rwX storage bootstrap/cache
+# The web server reads static files (CSS/JS, robots.txt, .htaccess) as "other";
+# everything else stays private (umask 027). PHP itself runs as the account user.
+chmod -R go+rX public
 chmod 600 .env
 
 step "9/9 web root → app/public"

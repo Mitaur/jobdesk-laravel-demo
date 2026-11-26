@@ -42,6 +42,7 @@ step "3/7 composer install (production)"
 "$PHP" artisan package:discover --no-ansi
 
 step "4/7 build CSS/JS"
+"$PHP" artisan view:clear --no-ansi >/dev/null   # Tailwind scans compiled views: same CSS as a fresh build
 PATH="$NODE_DIR:$PATH" npm ci --no-audit --no-fund --loglevel=error
 PATH="$NODE_DIR:$PATH" npm run build --silent
 rm -rf node_modules
@@ -53,6 +54,7 @@ step "6/7 refresh caches"
 "$PHP" artisan optimize:clear --no-ansi
 "$PHP" artisan optimize --no-ansi
 chmod -R u+rwX storage bootstrap/cache
+chmod -R go+rX public   # the web server reads static files as "other"
 
 step "7/7 done – maintenance mode off"
 }
