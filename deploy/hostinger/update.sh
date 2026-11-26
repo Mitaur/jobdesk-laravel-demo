@@ -23,19 +23,28 @@ BRANCH="${BRANCH:-main}"
 step() { echo "[$(date -u '+%H:%M:%S')] $*"; }
 
 # Everything runs inside main(): bash reads the whole function before starting,
-# so "git reset" replacing this file while it runs is safe.
+# so "git reset" replacing this file while it runs is safe. After the pull the
+# script starts again from the NEW file (phase 2), so changes to this script
+# take effect in the same run.
 main() {
 cd "$APP_DIR"
 
-step "1/7 maintenance mode on"
-"$PHP" artisan down --retry=30 --no-ansi || true
-trap '"$PHP" artisan up --no-ansi || true' EXIT   # always come back up, even on errors
+if [ "${JD_UPDATE_PHASE:-1}" != 2 ]; then
+    step "1/7 maintenance mode on"
+    "$PHP" artisan down --retry=30 --no-ansi || true
+    trap '"$PHP" artisan up --no-ansi || true' EXIT   # always come back up, even on errors
 
-step "2/7 get the latest code ($BRANCH)"
-BEFORE="$(git rev-parse --short HEAD)"
-git fetch --depth=1 origin "$BRANCH"
-git reset --hard "origin/$BRANCH"        # the server never edits tracked files
-step "    $BEFORE → $(git rev-parse --short HEAD)"
+    step "2/7 get the latest code ($BRANCH)"
+    BEFORE="$(git rev-parse --short HEAD)"
+    git fetch --depth=1 origin "$BRANCH"
+    git reset --hard "origin/$BRANCH"        # the server never edits tracked files
+    step "    $BEFORE → $(git rev-parse --short HEAD)"
+
+    trap - EXIT
+    exec env JD_UPDATE_PHASE=2 bash "$APP_DIR/deploy/hostinger/update.sh" "$@"
+fi
+trap '"$PHP" artisan up --no-ansi || true' EXIT
+chmod -R go+rX public   # files the pull rewrote must stay readable for the web server
 
 step "3/7 composer install (production)"
 "$PHP" "$COMPOSER" install --no-dev --optimize-autoloader --no-interaction --no-progress --no-scripts 2>&1
