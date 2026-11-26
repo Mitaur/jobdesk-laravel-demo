@@ -1,0 +1,24 @@
+<?php
+
+namespace App\Http\Requests\Api;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+/** POST /api/tokens – exchange email + password for a Sanctum token. */
+class IssueTokenRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    /** @return array<string, mixed> */
+    public function rules(): array
+    {
+        return [
+            'email' => ['required', 'email'],
+            'password' => ['required', 'string'],
+            'device_name' => ['required', 'string', 'max:60'],
+        ];
+    }
+}
