@@ -59,3 +59,8 @@ test('the demo seeder creates 1 demo user, 10 customers and 40 jobs', function (
     $this->seed();
     expect(User::count())->toBe(1)->and(ServiceJob::count())->toBe(40);
 });
+
+test('HSTS header is sent only over HTTPS', function () {
+    $this->get('https://localhost/')->assertHeader('Strict-Transport-Security', 'max-age=31536000');
+    $this->get('http://localhost/')->assertHeaderMissing('Strict-Transport-Security');
+});

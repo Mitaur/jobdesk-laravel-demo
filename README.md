@@ -43,7 +43,7 @@ Built to show the everyday Laravel skills small business apps need – cleanly, 
 | **Logs** | `daily` channel, 7 days kept (`LOG_DAILY_DAYS=7`), level from `.env` |
 | **Demo safety** | Shared demo account can't change its email/password or delete itself; `demo:reset` restores the sample data nightly |
 | **UI** | Mobile-first: tables become cards on phones; custom 404 page; Lighthouse 100 / 100 / 100 / 100 (landing + login, mobile + desktop, local) |
-| **Tests** | 69 Pest feature tests – run on PHP 8.3 and 8.5 with MariaDB in GitHub Actions |
+| **Tests** | 72 Pest feature tests – run on PHP 8.3 and 8.5 with MariaDB in GitHub Actions |
 
 ## Screenshots
 
@@ -108,7 +108,7 @@ DB_CONNECTION=mariadb DB_DATABASE=jobdesk_test DB_USERNAME=... DB_PASSWORD=... p
 vendor/bin/pint --test          # code style
 ```
 
-69 feature tests cover: auth (Breeze), customer + job CRUD, validation, **another user is blocked (404)**,
+72 feature tests cover: auth (Breeze), customer + job CRUD, validation, **another user is blocked (404)**,
 search / filter / sort / pagination, dashboard counts, the whole API (token required, read-only token can't write,
 validation errors, status update), the scheduler command and the demo-account protection.
 GitHub Actions runs them on **PHP 8.3 and 8.5 with MariaDB 11** on every push.
@@ -180,7 +180,9 @@ curl -X DELETE http://127.0.0.1:8000/api/tokens/current \
 
 ## Scheduler, cron & logs
 
-Scheduled tasks live in `routes/console.php`:
+Scheduled tasks live in `routes/console.php`. They are registered as **in-process closures**
+(`Schedule::call(fn () => Artisan::call('…'))`) because shared hosting such as Hostinger disables PHP's
+`proc_open()`, so the scheduler can't start `php artisan …` as a separate process. A test checks this.
 
 | Command | When | What |
 |---|---|---|
@@ -205,46 +207,50 @@ and `LOG_LEVEL` (`debug` locally, `info` or `warning` in production) controls ho
 
 ## Deploying to shared hosting (e.g. Hostinger)
 
-Needs: PHP 8.3+ (8.5 works), MySQL/MariaDB, SSH, Composer, cron.
+Tested on a Hostinger **Business** plan: PHP 8.5, MariaDB 11.8, git, Composer 2 and Node 24 on the server,
+`proc_open` disabled, **no SSH needed**. The files in [`deploy/hostinger/`](deploy/hostinger) do the work:
 
-**First deploy**
+| Script | What it does |
+|---|---|
+| `setup.sh <db_name> <db_user> '<temporary_db_password>'` | first deploy: composer `--no-dev`, CSS/JS build, `.env`, app key, migrate + demo data, caches, web root |
+| `configure-env.php` | writes the production `.env` and **replaces the temporary DB password with a new random one** that exists only in `.env` (chmod 600) |
+| `update.sh` | maintenance mode → `git pull` → composer → build → migrate → caches → back online |
 
-1. Create a MySQL database + user in the hosting panel.
-2. Upload the code **outside** the public web folder (or clone it there with Git) – never upload a `.zip` into `public_html`.
-3. Point the domain's **document root to the `public/` folder**. Then `.env`, `storage/`, `vendor/` and the logs
-   can't be opened from the web.
-4. Over SSH, in the project folder:
+Neither script prints secrets or writes log files.
 
-   ```bash
-   composer install --no-dev --optimize-autoloader
-   cp .env.example .env      # edit on the server only: APP_ENV=production, APP_DEBUG=false,
-                             # APP_URL=https://your-domain, DB_* (DB_HOST=127.0.0.1), LOG_LEVEL=info
-   php artisan key:generate
-   php artisan migrate --seed --force
-   php artisan optimize      # config, route, view and event cache
-   ```
+**Layout** – the code lives **outside** the web root; only `public/` is visible:
 
-5. Build the CSS/JS (`npm ci && npm run build`) locally or in CI and upload `public/build/` if the server has no Node.
-6. Add the cron line above (hPanel → Advanced → Cron Jobs, or `crontab -e`).
-7. Turn on HTTPS (free SSL) and force `http → https`.
-8. Check: `https://your-domain/.env` and `/storage/logs/` must **not** open; `APP_DEBUG=false`.
+```
+$HOME/domains/<your-domain>/app           ← git clone of this repo
+$HOME/domains/<your-domain>/public_html   → symlink to app/public
+```
+
+**First deploy (no SSH)**
+
+1. hPanel: create the website for the domain, turn on SSL, create a MySQL database + user (temporary password).
+2. One-time cron job (hPanel → Advanced → Cron Jobs), then delete it after it ran:
+   `git clone --depth 1 https://github.com/<you>/jobdesk-laravel-demo.git $HOME/domains/<your-domain>/app`
+3. One-time cron job, read its output, then delete it:
+   `bash $HOME/domains/<your-domain>/app/deploy/hostinger/setup.sh <db_name> <db_user> '<temporary_db_password>'`
+4. Permanent cron job, every minute:
+   `/opt/alt/php85/usr/bin/php $HOME/domains/<your-domain>/app/artisan schedule:run`
+5. Check: `https://<your-domain>/.env`, `/storage/logs/`, `/composer.json`, `/vendor/`, `/artisan` must return 403/404.
 
 **Updating**
 
 ```bash
-php artisan down
-git pull                                  # or upload the changed files
-composer install --no-dev --optimize-autoloader
-php artisan migrate --force
-php artisan optimize:clear && php artisan optimize
-php artisan up
+git push origin main                                           # on your computer
+bash $HOME/domains/<your-domain>/app/deploy/hostinger/update.sh   # on the server: SSH, or a one-time cron job
 ```
 
-**Staging:** use a second subdomain with its own database and `.env` (`APP_ENV=staging`), deploy there first,
-then repeat the same steps on production.
+**With SSH** (if you enable it in hPanel → Advanced → SSH Access) the same commands run directly in the terminal.
 
-`public/.htaccess` already adds: 1-year caching for hashed CSS/JS, gzip, basic security headers
-(`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) and hides `X-Powered-By`.
+**Staging:** a second subdomain with its own database and `.env` (`APP_ENV=staging`); run `update.sh` there first,
+then on production.
+
+`public/.htaccess` already adds: http → https redirect (not for localhost), 1-year caching for hashed CSS/JS, gzip,
+security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) and hides
+`X-Powered-By`; the app adds HSTS on HTTPS responses.
 
 ## Project notes
 

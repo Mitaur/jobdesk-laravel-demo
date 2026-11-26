@@ -4,6 +4,7 @@ use App\Enums\JobStatus;
 use App\Models\Customer;
 use App\Models\ServiceJob;
 use App\Models\User;
+use Illuminate\Console\Scheduling\CallbackEvent;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -42,10 +43,35 @@ test('jobs:remind-tomorrow rejects a bad --date', function () {
 test('the reminder runs daily from the scheduler', function () {
     $events = collect(app(Schedule::class)->events());
 
-    $reminder = $events->first(fn ($e) => str_contains($e->command ?? '', 'jobs:remind-tomorrow'));
+    $reminder = $events->first(fn ($e) => $e->description === 'jobs:remind-tomorrow');
 
     expect($reminder)->not->toBeNull()
         ->and($reminder->expression)->toBe('0 7 * * *');
+});
+
+test('scheduled tasks run in-process (no proc_open needed on shared hosting)', function () {
+    $events = collect(app(Schedule::class)->events());
+
+    expect($events)->toHaveCount(3)
+        ->and($events->every(fn ($e) => $e instanceof CallbackEvent))->toBeTrue()
+        ->and($events->pluck('description')->all())->toBe(['jobs:remind-tomorrow', 'demo:reset', 'sanctum:prune-expired']);
+});
+
+test('schedule:run at 07:00 writes the reminder log line', function () {
+    Carbon::setTestNow('2026-11-26 07:00:00');
+    config(['jobdesk.demo_mode' => false]);
+    $customer = Customer::factory()->create(['name' => 'Grace Turner']);
+    ServiceJob::factory()->for($customer)->scheduled(Carbon::parse('2026-11-27 09:00'))->create(['title' => 'Run by the scheduler']);
+
+    Log::spy();
+
+    $this->artisan('schedule:run')->assertSuccessful();
+
+    Log::shouldHaveReceived('info')
+        ->withArgs(fn ($message) => str_contains($message, 'Run by the scheduler'))
+        ->once();
+
+    Carbon::setTestNow();
 });
 
 test('the daily log channel keeps 7 days of files', function () {
