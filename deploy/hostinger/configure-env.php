@@ -8,11 +8,109 @@
  *
  * The temporary DB password (set in the hosting panel) is replaced by a new random
  * password generated here. The new password is written only to .env and is never
- * printed. If the database refuses the change, the temporary password is kept and
- * a warning tells you to change it in the hosting panel.
+ * printed. Some hosts keep two account entries for one database user (TCP and the
+ * local socket); both are switched to the new password. If the database refuses the
+ * change, the temporary password is kept and a warning tells you to change it in
+ * the hosting panel.
  *
- * Usage: php deploy/hostinger/configure-env.php /path/to/.env
+ * Usage:
+ *   php deploy/hostinger/configure-env.php /path/to/.env
+ *   php deploy/hostinger/configure-env.php --retire-temp /path/to/.env
+ *       (existing deploy: switches every account entry that still accepts
+ *        JD_DB_TEMP_PASSWORD to the password already in .env; .env is not changed)
  */
+$options = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 10];
+
+function denied(PDOException $e): bool
+{
+    return ((int) ($e->errorInfo[1] ?? 0) === 1045) || str_contains($e->getMessage(), '1045');
+}
+
+function set_password(PDO $pdo, string $new): void
+{
+    try {
+        $pdo->exec('ALTER USER CURRENT_USER() IDENTIFIED BY '.$pdo->quote($new));
+    } catch (Throwable) {
+        $pdo->exec('SET PASSWORD = PASSWORD('.$pdo->quote($new).')');
+    }
+}
+
+/**
+ * The temporary password must stop working everywhere. Checks TCP and the local
+ * socket separately; an entry that still accepts it gets the new password too.
+ * Prints only the result per route, never a password.
+ */
+function retire_temp_password(string $db, string $user, string $temp, string $new, array $options): bool
+{
+    $routes = [
+        'TCP 127.0.0.1' => "mysql:host=127.0.0.1;port=3306;dbname=$db;charset=utf8mb4",
+        'local socket' => "mysql:host=localhost;dbname=$db;charset=utf8mb4",
+    ];
+    $allGood = true;
+    foreach ($routes as $label => $dsn) {
+        try {
+            $pdo = new PDO($dsn, $user, $temp, $options);
+        } catch (PDOException $e) {
+            echo denied($e)
+                ? "temporary password over $label: refused (good)\n"
+                : "temporary password over $label: could not be checked (not reachable)\n";
+
+            continue;
+        }
+        try {
+            set_password($pdo, $new);
+            $pdo = null;
+            new PDO($dsn, $user, $new, $options);
+            try {
+                new PDO($dsn, $user, $temp, $options);
+                throw new RuntimeException('still accepted');
+            } catch (PDOException $e) {
+                if (! denied($e)) {
+                    throw $e;
+                }
+            }
+            echo "temporary password over $label: replaced by the .env password (good)\n";
+        } catch (Throwable $e) {
+            $allGood = false;
+            echo "WARNING: the temporary password still works over $label (".get_class($e).') '
+                ."– change the password in the hosting panel and update .env.\n";
+        }
+    }
+
+    return $allGood;
+}
+
+// --retire-temp: fix an existing deploy, do not touch .env
+if (($argv[1] ?? '') === '--retire-temp') {
+    $envFile = $argv[2] ?? '.env';
+    $temp = getenv('JD_DB_TEMP_PASSWORD');
+    if ($temp === false || $temp === '' || ! is_readable($envFile)) {
+        fwrite(STDERR, "usage: JD_DB_TEMP_PASSWORD=... php configure-env.php --retire-temp /path/to/.env\n");
+        exit(2);
+    }
+    $env = [];
+    foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if (preg_match('/^(DB_DATABASE|DB_USERNAME|DB_PASSWORD)=(.*)$/', $line, $m)) {
+            $value = $m[2];
+            if (strlen($value) >= 2 && $value[0] === '"' && str_ends_with($value, '"')) {
+                $value = stripcslashes(substr($value, 1, -1));
+            }
+            $env[$m[1]] = $value;
+        }
+    }
+    foreach (['DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD'] as $key) {
+        if (($env[$key] ?? '') === '') {
+            fwrite(STDERR, "$key missing in .env\n");
+            exit(2);
+        }
+    }
+    if ($env['DB_PASSWORD'] === $temp) {
+        fwrite(STDERR, ".env still uses the temporary password – nothing to do here\n");
+        exit(1);
+    }
+    exit(retire_temp_password($env['DB_DATABASE'], $env['DB_USERNAME'], $temp, $env['DB_PASSWORD'], $options) ? 0 : 1);
+}
+
 $envFile = $argv[1] ?? '.env';
 $need = ['JD_APP_URL', 'JD_DB_NAME', 'JD_DB_USER', 'JD_DB_TEMP_PASSWORD'];
 foreach ($need as $key) {
@@ -26,7 +124,6 @@ $host = '127.0.0.1';
 $db = getenv('JD_DB_NAME');
 $user = getenv('JD_DB_USER');
 $password = getenv('JD_DB_TEMP_PASSWORD');
-$options = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 10];
 $dsn = "mysql:host=$host;port=3306;dbname=$db;charset=utf8mb4";
 
 // 1) connect with the temporary password and rotate it
@@ -36,11 +133,7 @@ try {
     echo 'database server: '.(stripos($server, 'mariadb') !== false ? 'MariaDB ' : 'MySQL ').strtok($server, '-')."\n";
 
     $new = rtrim(strtr(base64_encode(random_bytes(30)), '+/', 'Kq'), '=').'a7Z';
-    try {
-        $pdo->exec('ALTER USER CURRENT_USER() IDENTIFIED BY '.$pdo->quote($new));
-    } catch (Throwable) {
-        $pdo->exec('SET PASSWORD = PASSWORD('.$pdo->quote($new).')');
-    }
+    set_password($pdo, $new);
     $pdo = null;
 
     new PDO($dsn, $user, $new, $options); // must work with the new password
@@ -48,20 +141,8 @@ try {
     $password = $new;
     echo "database password: replaced by a new random one (stored only in .env)\n";
 
-    // The old password must be dead everywhere. Some hosts keep a second account entry
-    // (e.g. user@localhost for socket connections) – check TCP and socket separately.
-    $routes = ['TCP 127.0.0.1' => $dsn, 'local socket' => "mysql:host=localhost;dbname=$db"];
-    foreach ($routes as $label => $route) {
-        try {
-            new PDO($route, $user, $temp, $options);
-            echo "WARNING: the temporary password still works over $label – change it in the hosting panel.\n";
-        } catch (PDOException $e) {
-            $denied = ((int) ($e->errorInfo[1] ?? 0) === 1045) || str_contains($e->getMessage(), '1045');
-            echo $denied
-                ? "temporary password over $label: refused (good)\n"
-                : "temporary password over $label: could not be checked (not reachable)\n";
-        }
-    }
+    // some hosts keep a second account entry (e.g. user@localhost for the socket)
+    retire_temp_password($db, $user, $temp, $new, $options);
 } catch (Throwable $e) {
     echo 'WARNING: could not rotate the database password ('.get_class($e).'). '
         ."The temporary password is kept – change it in the hosting panel and update .env.\n";
