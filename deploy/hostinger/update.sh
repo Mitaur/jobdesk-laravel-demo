@@ -15,6 +15,9 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PHP="${PHP_BIN:-/opt/alt/php85/usr/bin/php}"
 COMPOSER="${COMPOSER_BIN:-/usr/local/bin/composer}"
 NODE_DIR="${NODE_DIR:-/opt/alt/alt-nodejs24/root/usr/bin}"
+# Shared hosting limits threads per account: Vite 8 (Rolldown) stops with
+# "global thread pool has not been initialized" unless it uses one thread.
+export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-1}" UV_THREADPOOL_SIZE="${UV_THREADPOOL_SIZE:-2}"
 BRANCH="${BRANCH:-main}"
 
 step() { echo "[$(date -u '+%H:%M:%S')] $*"; }
